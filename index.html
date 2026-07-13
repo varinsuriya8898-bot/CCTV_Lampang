@@ -386,7 +386,8 @@ const SUPPORTS_NATIVE_HLS = !!document.createElement("video").canPlayType("appli
 function mediaFor(cam) {
   if (cam.hls) return { kind: "hls", url: cam.hls };
   if (SUPPORTS_NATIVE_HLS) {
-    return { kind: "hls", url: `${CONFIG.gatewayUrl.replace(/\/$/, "")}/api/stream.m3u8?src=${encodeURIComponent(cam.src)}` };
+    // ต้องใช้ &mp4 (fMP4/CMAF) — iOS เล่น H.265/HEVC ได้เฉพาะแบบนี้ ไม่ใช่ MPEG-TS
+    return { kind: "hls", url: `${CONFIG.gatewayUrl.replace(/\/$/, "")}/api/stream.m3u8?src=${encodeURIComponent(cam.src)}&mp4` };
   }
   return { kind: "iframe", url: playerUrl(cam) };
 }
