@@ -149,7 +149,7 @@
   .tile .head .badge.live { color: var(--ok); border: 1px solid var(--ok); }
   /* OFFLINE = สีเทา */
   .tile .head .badge.offline { color: var(--muted); border: 1px solid var(--muted); }
-  .tile .video { aspect-ratio: 16/9; position: relative; }
+  .tile .video { aspect-ratio: 16/9; position: relative; flex-shrink: 0; }
   .tile iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
   .tile .video video { position: absolute; inset: 0; width: 100%; height: 100%; background: #000; object-fit: cover; cursor: pointer; }
   /* แผ่นคลุมแสดงสถานะ (กำลังเชื่อมต่อ / OFFLINE) วางทับวิดีโอ */
@@ -255,8 +255,27 @@
     display: flex; gap: 18px;
   }
   @media (max-width: 900px) {
-    aside { display: none; }
+    /* วางแนวตั้ง: แถบกรอง (บน) → จอภาพ/แผนที่ (ล่าง) */
+    .wrap { flex-direction: column; }
+    aside {
+      width: 100%; flex-direction: row; min-height: 0;
+      border-right: none; border-bottom: 1px solid var(--line);
+    }
+    .filters { flex-wrap: nowrap; overflow-x: auto; border-bottom: none; width: 100%; padding: 8px 10px; }
+    .chip { flex-shrink: 0; padding: 7px 13px; }   /* กดง่ายขึ้น + ไม่ย่อ */
+    .cam-list { display: none; }                    /* ซ่อนลิสต์กล้องยาวๆ บนมือถือ */
+    /* หัวเว็บ + แถบเครื่องมือ: ให้ตัดบรรทัดได้ ไม่ล้นจอ */
+    header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; }
+    header .spacer { display: none; }
+    .brand h1 { font-size: 15px; }
+    .clock { margin-left: auto; }
+    .clock .time { font-size: 17px; }
+    .toolbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+    .tb-spacer { display: none; }
+    .toolbar .label { display: none; }              /* ประหยัดที่ */
+    #gridView { padding: 8px; }
     #gridView.cols-2, #gridView.cols-3, #gridView.cols-4 { grid-template-columns: 1fr; }
+    #gridView.cols-1 .tile { max-width: none; }
   }
 </style>
 </head>
