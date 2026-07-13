@@ -209,8 +209,9 @@
   .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border-radius: 12px; }
   .leaflet-popup-tip { background: var(--panel); }
 
+  .tb-spacer { flex: 1; }   /* ดันเครื่องมือที่เหลือไปชิดขวา */
   /* ปุ่มเปลี่ยนหน้า (paging) */
-  .pager { display: none; align-items: center; gap: 6px; margin-left: auto; }
+  .pager { display: none; align-items: center; gap: 6px; }
   .pager button {
     background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
     width: 30px; height: 30px; border-radius: 8px; cursor: pointer; font-size: 15px;
@@ -219,13 +220,12 @@
   .pager span { font-size: 12.5px; color: var(--muted); min-width: 42px; text-align: center; }
   /* ปุ่ม/แถบเครื่องมือแก้ตำแหน่งหมุด */
   .toolbtn {
-    display: none; align-items: center; gap: 6px; margin-left: auto;
+    display: none; align-items: center; gap: 6px;
     background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
     padding: 7px 12px; border-radius: 8px; cursor: pointer; font-family: "Sarabun"; font-size: 12.5px;
   }
   .toolbtn:hover { border-color: var(--accent); }
   .toolbtn.on { background: var(--warn); border-color: var(--warn); color: #2a1e05; font-weight: 600; }
-  .toolbtn.ghost { margin-left: 0; }
   /* แถบคำแนะนำตอนแก้หมุด */
   .edit-hint {
     position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
@@ -295,6 +295,11 @@
         <button data-cols="3">3×3</button>
         <button data-cols="4">4×4</button>
       </div>
+
+      <div class="tb-spacer"></div>
+
+      <!-- ปุ่มรีเฟรชเฉพาะกล้องในหน้านี้ (ไม่รีเซ็ตเลย์เอาต์แบบ F5) -->
+      <button class="toolbtn" id="refreshGrid" title="โหลดกล้องในหน้านี้ใหม่"><i class="ti ti-refresh"></i> รีเฟรช</button>
 
       <!-- ปุ่มเปลี่ยนหน้า (โชว์เฉพาะหน้าจอภาพเมื่อมีหลายหน้า) -->
       <div class="pager" id="pager">
@@ -692,6 +697,7 @@ function setView(v) {
   // เครื่องมือของแต่ละหน้า
   $("#layoutSeg").style.display = isGrid ? "" : "none";
   $("#layoutLabel").style.display = isGrid ? "" : "none";
+  $("#refreshGrid").style.display = isGrid ? "flex" : "none";
   $("#editPins").style.display = (!isGrid && IS_LOCAL) ? "flex" : "none";
   if (isGrid) { if (editMode) toggleEditMode(false); }   // ออกจากโหมดแก้หมุดเมื่อกลับไปจอภาพ
   applyPaging();                                          // อัปเดตปุ่มเปลี่ยนหน้า (ซ่อนเมื่อไม่ใช่จอภาพ)
@@ -714,6 +720,15 @@ document.querySelectorAll("#layoutSeg button").forEach((b) =>
   b.addEventListener("click", () => setCols(+b.dataset.cols)));
 $("#pagerPrev").addEventListener("click", () => { gridPage--; applyPaging(); });
 $("#pagerNext").addEventListener("click", () => { gridPage++; applyPaging(); });
+
+/* รีเฟรชเฉพาะกล้องที่เห็นในหน้านี้ (ไม่รีโหลดทั้งหน้า จึงไม่รีเซ็ตเลย์เอาต์) */
+function refreshVisible() {
+  if ($("#gridView").style.display === "none") return;
+  const boxes = document.querySelectorAll("#gridView .tile:not(.paged-hidden) .video[data-cam]");
+  boxes.forEach((box) => reloadStream(box.dataset.cam));
+  showToast(`รีเฟรช ${boxes.length} กล้องในหน้านี้แล้ว`);
+}
+$("#refreshGrid").addEventListener("click", refreshVisible);
 
 /* =========================================================================
  * ตรวจสุขภาพกล้องอัตโนมัติ (Auto Online/Offline)
