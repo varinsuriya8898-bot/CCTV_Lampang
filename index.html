@@ -377,15 +377,18 @@ const playerUrl = (cam) =>
 // รันบนเครื่องตัวเอง (localhost/ไฟล์) → เปิดปุ่มแก้หมุด | ขึ้น GitHub → ซ่อน
 const IS_LOCAL = ["localhost", "127.0.0.1", ""].includes(location.hostname);
 
-// iOS/Safari เล่น HLS (รวม H.265/hvc1) แบบ native ด้วย hardware decoder → ลื่น ไม่ภาพเขียว
-const SUPPORTS_NATIVE_HLS = !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+// เฉพาะ Safari/iOS ที่ควรเล่นกล้องเทศบาล (H.265) ผ่าน HLS native — ใช้ hardware decoder ได้ดี
+// เบราว์เซอร์อื่น (Chrome/Edge/Firefox) ใช้ iframe MSE ซึ่งถอด H.265 ได้อยู่แล้ว (hls.js ถอด H.265 ไม่ได้ = ดำ)
+const IS_APPLE_SAFARI =
+  /iP(hone|ad|od)/.test(navigator.userAgent) ||
+  (/^((?!chrome|android|crios|fxios|edg|opr).)*safari/i.test(navigator.userAgent));
 
 /* เลือกวิธีแสดงกล้องแต่ละตัว:
- *   - กล้องทางหลวง (มี cam.hls) → HLS เสมอ
- *   - กล้องเทศบาล → HLS ผ่าน gateway บนอุปกรณ์ที่เล่น HLS native ได้ (iOS/มือถือ) / iframe บนคอม */
+ *   - กล้องทางหลวง (มี cam.hls) → HLS เสมอ (H.264 เล่นได้ทุกเครื่อง)
+ *   - กล้องเทศบาล (H.265) → HLS native บน Safari/iOS / iframe บนเบราว์เซอร์อื่น */
 function mediaFor(cam) {
   if (cam.hls) return { kind: "hls", url: cam.hls };
-  if (SUPPORTS_NATIVE_HLS) {
+  if (IS_APPLE_SAFARI) {
     // ต้องใช้ &mp4 (fMP4/CMAF) — iOS เล่น H.265/HEVC ได้เฉพาะแบบนี้ ไม่ใช่ MPEG-TS
     return { kind: "hls", url: `${CONFIG.gatewayUrl.replace(/\/$/, "")}/api/stream.m3u8?src=${encodeURIComponent(cam.src)}&mp4` };
   }
