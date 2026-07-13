@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ศูนย์เฝ้าระวัง CCTV — Dashboard</title>
+
+<!-- Leaflet (แผนที่) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css">
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+
+<!-- Tabler Icons -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.10.0/dist/tabler-icons.min.css">
+
+<!-- ฟอนต์ไทย -->
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600&family=Chakra+Petch:wght@500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #111827;
+    --panel-2: #1a2332;
+    --line: #243044;
+    --text: #e5edf8;
+    --muted: #8ea3bf;
+    --accent: #38bdf8;
+    --ok: #34d399;
+    --warn: #f6ad37;
+    --danger: #ff5470;
+    --radius: 14px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Sarabun", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  h1, h2, h3, .brand { font-family: "Chakra Petch", "Sarabun", sans-serif; }
+
+  /* ===== Header ===== */
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .brand-badge {
+    width: 42px; height: 42px; border-radius: 12px;
+    background: linear-gradient(135deg, #0ea5e9, #6366f1);
+    display: grid; place-items: center; font-size: 22px; color: #fff;
+  }
+  .brand h1 { font-size: 17px; letter-spacing: .3px; }
+  .brand p { font-size: 12px; color: var(--muted); }
+  .spacer { flex: 1; }
+  .clock { text-align: right; }
+  .clock .time { font-family: "Chakra Petch"; font-size: 20px; color: var(--accent); }
+  .clock .date { font-size: 12px; color: var(--muted); }
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    padding: 8px 14px; border-radius: 999px; font-size: 13px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok);
+         box-shadow: 0 0 8px var(--ok); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+
+  /* ===== Layout ===== */
+  .wrap { flex: 1; display: flex; min-height: 0; }
+
+  /* Sidebar */
+  aside {
+    width: 320px; flex-shrink: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .filters { display: flex; gap: 6px; padding: 12px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .chip {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+    padding: 6px 12px; border-radius: 999px; font-size: 12.5px; cursor: pointer;
+    font-family: "Sarabun"; transition: .15s;
+  }
+  .chip.active { background: var(--accent); border-color: var(--accent); color: #06202e; font-weight: 600; }
+  .cam-list { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .cam-item {
+    display: flex; gap: 12px; align-items: center;
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 10px 12px; cursor: pointer; transition: .15s;
+  }
+  .cam-item:hover { border-color: var(--accent); transform: translateX(2px); }
+  .cam-item.selected { border-color: var(--accent); background: #14263a; }
+  .cam-num {
+    width: 34px; height: 34px; border-radius: 10px; flex-shrink: 0;
+    display: grid; place-items: center; font-family: "Chakra Petch"; font-weight: 700;
+    color: #fff; font-size: 15px;
+  }
+  .cam-item b { font-size: 13.5px; font-weight: 600; display: block; }
+  .cam-item span { font-size: 11.5px; color: var(--muted); }
+
+  /* Main */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .toolbar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  .seg { display: flex; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button {
+    background: none; border: none; color: var(--muted); font-family: "Sarabun";
+    padding: 8px 14px; font-size: 13px; cursor: pointer;
+  }
+  .seg button.active { background: var(--accent); color: #06202e; font-weight: 600; }
+  .toolbar .label { font-size: 12px; color: var(--muted); margin-left: 6px; }
+
+  .content { flex: 1; position: relative; min-height: 0; }
+
+  /* Grid view */
+  #gridView {
+    position: absolute; inset: 0; padding: 12px; overflow-y: auto;
+    display: grid; gap: 12px; align-content: start;
+  }
+  #gridView.cols-1 { grid-template-columns: 1fr; }
+  #gridView.cols-2 { grid-template-columns: repeat(2, 1fr); }
+  #gridView.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .tile {
+    background: #000; border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .tile .head {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; background: var(--panel); font-size: 13px;
+  }
+  .tile .head .live {
+    margin-left: auto; font-size: 10.5px; font-family: "Chakra Petch";
+    color: var(--danger); border: 1px solid var(--danger);
+    padding: 1px 8px; border-radius: 999px;
+  }
+  .tile .video { aspect-ratio: 16/9; position: relative; }
+  .tile iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+
+  /* Map view */
+  #mapView { position: absolute; inset: 0; display: none; }
+  #map { width: 100%; height: 100%; background: #0b0f17; }
+  .marker-pin {
+    width: 30px; height: 30px; border-radius: 50% 50% 50% 4px;
+    transform: rotate(-45deg); border: 2px solid #fff;
+    display: grid; place-items: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,.5);
+  }
+  .marker-pin span { transform: rotate(45deg); color: #fff; font-family: "Chakra Petch"; font-weight: 700; font-size: 13px; }
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border-radius: 12px; }
+  .leaflet-popup-tip { background: var(--panel); }
+  .popup-player { width: 340px; }
+  .popup-player b { font-family: "Chakra Petch"; font-size: 14px; }
+  .popup-player .pv { margin-top: 8px; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; }
+  .popup-player iframe { width: 100%; height: 100%; border: 0; background: #000; }
+
+  footer {
+    padding: 8px 20px; font-size: 11.5px; color: var(--muted);
+    border-top: 1px solid var(--line); background: var(--panel); flex-shrink: 0;
+    display: flex; gap: 18px;
+  }
+  @media (max-width: 900px) {
+    aside { display: none; }
+    #gridView.cols-3, #gridView.cols-2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand-badge"><i class="ti ti-video"></i></div>
+  <div class="brand">
+    <h1 id="orgName">ศูนย์เฝ้าระวัง CCTV</h1>
+    <p id="orgSub">ระบบบริหารจัดการกล้องวงจรปิด</p>
+  </div>
+  <div class="spacer"></div>
+  <div class="status-pill"><span class="dot"></span><span id="statCams">0 กล้อง</span></div>
+  <div class="clock">
+    <div class="time" id="clockTime">--:--:--</div>
+    <div class="date" id="clockDate">-</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <aside>
+    <div class="filters" id="filterBar"></div>
+    <div class="cam-list" id="camList"></div>
+  </aside>
+
+  <main>
+    <div class="toolbar">
+      <div class="seg" id="viewSeg">
+        <button data-view="grid" class="active"><i class="ti ti-layout-grid"></i> จอภาพ</button>
+        <button data-view="map"><i class="ti ti-map-2"></i> แผนที่</button>
+      </div>
+      <span class="label">รูปแบบจอ:</span>
+      <div class="seg" id="layoutSeg">
+        <button data-cols="1">1×1</button>
+        <button data-cols="2" class="active">2×2</button>
+        <button data-cols="3">3×3</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div id="gridView" class="cols-2"></div>
+      <div id="mapView"><div id="map"></div></div>
+    </div>
+  </main>
+</div>
+
+<footer>
+  <span><i class="ti ti-shield-lock"></i> สตรีมผ่าน Gateway — ไม่มีการเปิดเผยรหัสผ่านกล้องบนหน้าเว็บ</span>
+  <span id="gwLabel"></span>
+</footer>
+
+<!-- ข้อมูลกล้องทั้งหมดแก้ไขได้ที่ไฟล์ cameras.js -->
+<script src="cameras.js"></script>
+<script>
+/* ================= Utilities ================= */
+const $ = (s) => document.querySelector(s);
+const playerUrl = (cam) =>
+  `${CONFIG.gatewayUrl.replace(/\/$/, "")}/${CONFIG.playerPage}?src=${encodeURIComponent(cam.src)}`;
+
+/* ================= Header / นาฬิกา ================= */
+$("#orgName").textContent = CONFIG.orgName;
+$("#orgSub").textContent = CONFIG.orgSub;
+$("#gwLabel").textContent = `Gateway: ${CONFIG.gatewayUrl}`;
+function tickClock() {
+  const now = new Date();
+  $("#clockTime").textContent = now.toLocaleTimeString("th-TH", { hour12: false });
+  $("#clockDate").textContent = now.toLocaleDateString("th-TH", {
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+}
+tickClock(); setInterval(tickClock, 1000);
+
+/* ================= State ================= */
+let activeFilter = "all";
+let selectedCamId = null;
+
+const filtered = () =>
+  CAMERAS.filter((c) => activeFilter === "all" || c.type === activeFilter);
+
+/* ================= Filter bar ================= */
+function renderFilters() {
+  const bar = $("#filterBar");
+  bar.innerHTML = "";
+  const mk = (key, label) => {
+    const b = document.createElement("button");
+    b.className = "chip" + (activeFilter === key ? " active" : "");
+    b.textContent = label;
+    b.onclick = () => { activeFilter = key; selectedCamId = null; renderAll(); };
+    bar.appendChild(b);
+  };
+  mk("all", `ทั้งหมด (${CAMERAS.length})`);
+  for (const [key, t] of Object.entries(CAMERA_TYPES)) {
+    const n = CAMERAS.filter((c) => c.type === key).length;
+    if (n) mk(key, `${t.label} (${n})`);
+  }
+}
+
+/* ================= Sidebar list ================= */
+function renderList() {
+  const list = $("#camList");
+  list.innerHTML = "";
+  for (const cam of filtered()) {
+    const t = CAMERA_TYPES[cam.type];
+    const el = document.createElement("div");
+    el.className = "cam-item" + (cam.id === selectedCamId ? " selected" : "");
+    el.innerHTML = `
+      <div class="cam-num" style="background:${t.color}">${cam.id}</div>
+      <div><b>${cam.name}</b><span>${cam.desc}</span></div>`;
+    el.onclick = () => {
+      selectedCamId = cam.id;
+      setView("grid");
+      setCols(1);
+      renderAll();
+    };
+    list.appendChild(el);
+  }
+  $("#statCams").textContent = `${filtered().length} กล้องออนไลน์`;
+}
+
+/* ================= Grid view ================= */
+function renderGrid() {
+  const grid = $("#gridView");
+  grid.innerHTML = "";
+  let cams = filtered();
+  if (selectedCamId) {
+    const sel = cams.find((c) => c.id === selectedCamId);
+    if (sel) cams = [sel, ...cams.filter((c) => c.id !== selectedCamId)];
+  }
+  for (const cam of cams) {
+    const t = CAMERA_TYPES[cam.type];
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.innerHTML = `
+      <div class="head">
+        <i class="ti ${t.icon}" style="color:${t.color}"></i>
+        <span>${cam.id}. ${cam.name}</span>
+        <span class="live">● LIVE</span>
+      </div>
+      <div class="video">
+        <iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen" loading="lazy"></iframe>
+      </div>`;
+    grid.appendChild(tile);
+  }
+}
+
+/* ================= Map view ================= */
+let map, markerLayer;
+function initMap() {
+  if (map) return;
+  map = L.map("map", { zoomControl: true }).setView(CONFIG.mapCenter, CONFIG.mapZoom);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap &copy; CARTO",
+  }).addTo(map);
+  markerLayer = L.layerGroup().addTo(map);
+}
+function renderMarkers() {
+  if (!map) return;
+  markerLayer.clearLayers();
+  for (const cam of filtered()) {
+    const t = CAMERA_TYPES[cam.type];
+    const icon = L.divIcon({
+      className: "",
+      html: `<div class="marker-pin" style="background:${t.color}"><span>${cam.id}</span></div>`,
+      iconSize: [30, 30], iconAnchor: [15, 28], popupAnchor: [0, -26],
+    });
+    L.marker([cam.lat, cam.lng], { icon })
+      .bindPopup(
+        `<div class="popup-player">
+           <b>${cam.id}. ${cam.name}</b>
+           <div style="font-size:12px;color:#8ea3bf">${cam.desc}</div>
+           <div class="pv"><iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen"></iframe></div>
+         </div>`,
+        { maxWidth: 380 }
+      )
+      .addTo(markerLayer);
+  }
+}
+
+/* ================= View / layout switching ================= */
+function setView(v) {
+  document.querySelectorAll("#viewSeg button").forEach((b) =>
+    b.classList.toggle("active", b.dataset.view === v));
+  $("#gridView").style.display = v === "grid" ? "grid" : "none";
+  $("#mapView").style.display = v === "map" ? "block" : "none";
+  if (v === "map") {
+    initMap();
+    renderMarkers();
+    setTimeout(() => map.invalidateSize(), 60);
+  }
+}
+function setCols(n) {
+  document.querySelectorAll("#layoutSeg button").forEach((b) =>
+    b.classList.toggle("active", +b.dataset.cols === n));
+  $("#gridView").className = `cols-${n}`;
+}
+document.querySelectorAll("#viewSeg button").forEach((b) =>
+  b.addEventListener("click", () => setView(b.dataset.view)));
+document.querySelectorAll("#layoutSeg button").forEach((b) =>
+  b.addEventListener("click", () => setCols(+b.dataset.cols)));
+
+/* ================= Boot ================= */
+function renderAll() {
+  renderFilters();
+  renderList();
+  renderGrid();
+  renderMarkers();
+}
+renderAll();
+</script>
+</body>
+</html>
