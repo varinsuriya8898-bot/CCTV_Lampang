@@ -134,13 +134,27 @@
     display: flex; align-items: center; gap: 8px;
     padding: 8px 12px; background: var(--panel); font-size: 13px;
   }
-  .tile .head .live {
+  .tile .head .badge {
     margin-left: auto; font-size: 10.5px; font-family: "Chakra Petch";
-    color: var(--danger); border: 1px solid var(--danger);
     padding: 1px 8px; border-radius: 999px;
   }
+  /* LIVE = สีเขียว (แก้สีตรงนี้ได้: เปลี่ยน var(--ok) เป็นสีที่ต้องการ) */
+  .tile .head .badge.live { color: var(--ok); border: 1px solid var(--ok); }
+  /* OFFLINE = สีเทา */
+  .tile .head .badge.offline { color: var(--muted); border: 1px solid var(--muted); }
   .tile .video { aspect-ratio: 16/9; position: relative; }
   .tile iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+  /* แผ่นคลุมแสดงสถานะ (กำลังเชื่อมต่อ / OFFLINE) วางทับวิดีโอ */
+  .offline-overlay {
+    position: absolute; inset: 0; z-index: 2;
+    display: grid; place-items: center; align-content: center; gap: 6px;
+    background: #0d1420; color: var(--muted); text-align: center;
+  }
+  .offline-overlay.hidden { display: none; }
+  .offline-overlay .ti { font-size: 36px; opacity: .75; }
+  .offline-overlay .txt { font-family: "Chakra Petch"; font-size: 15px; letter-spacing: 1px; }
+  .offline-overlay.connecting .ti { animation: spin 1s linear infinite; color: var(--accent); }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* Map view */
   #mapView { position: absolute; inset: 0; display: none; }
@@ -283,7 +297,8 @@ function renderList() {
     };
     list.appendChild(el);
   }
-  $("#statCams").textContent = `${filtered().length} กล้องออนไลน์`;
+  const onlineCount = filtered().filter((c) => camStatus[c.src] === true).length;
+  $("#statCams").textContent = `${onlineCount}/${filtered().length} กล้องออนไลน์`;
 }
 
 /* ================= Grid view ================= */
@@ -299,17 +314,23 @@ function renderGrid() {
     const t = CAMERA_TYPES[cam.type];
     const tile = document.createElement("div");
     tile.className = "tile";
+    // iframe อยู่เสมอ (เพื่อคอยเชื่อมต่อ) มีแผ่นคลุมสถานะทับด้านบน
     tile.innerHTML = `
       <div class="head">
         <i class="ti ${t.icon}" style="color:${t.color}"></i>
         <span>${cam.id}. ${cam.name}</span>
-        <span class="live">● LIVE</span>
+        <span class="badge" data-badge="${cam.src}">…</span>
       </div>
-      <div class="video">
+      <div class="video" data-cam="${cam.src}">
         <iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen" loading="lazy"></iframe>
+        <div class="offline-overlay connecting" data-overlay="${cam.src}">
+          <i class="ti ti-loader-2"></i>
+          <div class="txt">กำลังเชื่อมต่อ…</div>
+        </div>
       </div>`;
     grid.appendChild(tile);
   }
+  applyAllStatus();   // ทาสถานะล่าสุดที่รู้ทันที (กันภาพกระพริบตอนสลับ filter)
 }
 
 /* ================= Map view ================= */
@@ -328,17 +349,23 @@ function renderMarkers() {
   markerLayer.clearLayers();
   for (const cam of filtered()) {
     const t = CAMERA_TYPES[cam.type];
+    // กล้อง offline = หมุดสีเทา (ใช้สถานะสดจากการตรวจอัตโนมัติ)
+    const isOffline = camStatus[cam.src] === false;
+    const pinColor = isOffline ? "#64748b" : t.color;
     const icon = L.divIcon({
       className: "",
-      html: `<div class="marker-pin" style="background:${t.color}"><span>${cam.id}</span></div>`,
+      html: `<div class="marker-pin" style="background:${pinColor}"><span>${cam.id}</span></div>`,
       iconSize: [30, 30], iconAnchor: [15, 28], popupAnchor: [0, -26],
     });
+    const preview = isOffline
+      ? `<div class="pv" style="display:grid;place-items:center;background:#0d1420;color:#8ea3bf;font-family:'Chakra Petch'">OFFLINE</div>`
+      : `<div class="pv"><iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen"></iframe></div>`;
     L.marker([cam.lat, cam.lng], { icon })
       .bindPopup(
         `<div class="popup-player">
            <b>${cam.id}. ${cam.name}</b>
            <div style="font-size:12px;color:#8ea3bf">${cam.desc}</div>
-           <div class="pv"><iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen"></iframe></div>
+           ${preview}
          </div>`,
         { maxWidth: 380 }
       )
@@ -368,6 +395,97 @@ document.querySelectorAll("#viewSeg button").forEach((b) =>
 document.querySelectorAll("#layoutSeg button").forEach((b) =>
   b.addEventListener("click", () => setCols(+b.dataset.cols)));
 
+/* =========================================================================
+ * ตรวจสุขภาพกล้องอัตโนมัติ (Auto Online/Offline)
+ * -------------------------------------------------------------------------
+ * ถาม go2rtc API: {gateway}/api/streams?src=<ID> ทุก HEALTH_INTERVAL วินาที
+ *   - กล้องปกติ   → producer มี bytes_recv/receivers (ข้อมูลไหลจริง) = ONLINE
+ *   - กล้องเสีย   → producer มีแต่ url เปล่า / ไม่มี producer      = OFFLINE
+ * เมื่อกล้องกลับมาปกติ จะโหลด iframe ใหม่ให้เองเพื่อแสดงวิดีโอ
+ * ตั้ง offline:true ในกล้องตัวไหน = บังคับ OFFLINE ถาวร (ข้ามการตรวจอัตโนมัติ)
+ * ========================================================================= */
+const HEALTH_INTERVAL = 12000;      // มิลลิวินาที (12 วินาที)
+const HEALTH_TIMEOUT  = 8000;       // เวลารอ API สูงสุดต่อกล้อง
+const camStatus = {};               // src -> true(online) / false(offline) / undefined(กำลังเชื่อมต่อ)
+
+async function probeCamera(cam) {
+  if (cam.offline) return false;    // บังคับ offline ด้วยมือ
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), HEALTH_TIMEOUT);
+    const res = await fetch(
+      `${CONFIG.gatewayUrl.replace(/\/$/, "")}/api/streams?src=${encodeURIComponent(cam.src)}`,
+      { cache: "no-store", signal: ctrl.signal }
+    );
+    clearTimeout(timer);
+    if (!res.ok) return false;
+    const data = await res.json();
+    const producers = data.producers || [];
+    // ออนไลน์เมื่อมี producer ที่กำลังรับข้อมูลจริง
+    return producers.some(
+      (p) => (p.bytes_recv || 0) > 0 || (Array.isArray(p.receivers) && p.receivers.length > 0)
+    );
+  } catch {
+    return false;                   // ต่อ API ไม่ได้ = ถือว่า offline
+  }
+}
+
+/* ทาสถานะลง DOM ของกล้องหนึ่งตัว (badge + แผ่นคลุม) */
+function applyStatus(src) {
+  const online = camStatus[src];
+  const badge = document.querySelector(`[data-badge="${src}"]`);
+  const overlay = document.querySelector(`[data-overlay="${src}"]`);
+  if (!badge || !overlay) return;
+
+  if (online === true) {
+    badge.className = "badge live";
+    badge.textContent = "● LIVE";
+    overlay.classList.add("hidden");
+    overlay.classList.remove("connecting");
+  } else if (online === false) {
+    badge.className = "badge offline";
+    badge.textContent = "● OFFLINE";
+    overlay.classList.remove("hidden", "connecting");
+    overlay.innerHTML = `<i class="ti ti-plug-connected-x"></i><div class="txt">OFFLINE</div>`;
+  } else {
+    badge.className = "badge";
+    badge.textContent = "…";
+    overlay.classList.remove("hidden");
+    overlay.classList.add("connecting");
+    overlay.innerHTML = `<i class="ti ti-loader-2"></i><div class="txt">กำลังเชื่อมต่อ…</div>`;
+  }
+}
+
+function applyAllStatus() {
+  for (const cam of CAMERAS) applyStatus(cam.src);
+}
+
+/* โหลด iframe ใหม่ (ใช้ตอนกล้องกลับมาออนไลน์ เพื่อให้ player เชื่อมต่อสด) */
+function reloadStream(src) {
+  const box = document.querySelector(`.video[data-cam="${src}"] iframe`);
+  if (box) box.src = box.src;
+}
+
+async function pollHealth() {
+  await Promise.all(
+    CAMERAS.map(async (cam) => {
+      const prev = camStatus[cam.src];
+      const online = await probeCamera(cam);
+      camStatus[cam.src] = online;
+      if (prev !== online) {
+        if (online && prev === false) reloadStream(cam.src);  // เพิ่งกลับมาออนไลน์ → โหลดใหม่
+        applyStatus(cam.src);
+        renderList();                                          // อัปเดตตัวนับ x/y ออนไลน์
+        if (map) renderMarkers();                              // อัปเดตหมุดบนแผนที่
+      } else if (online === false && !cam.offline) {
+        // ยัง offline อยู่ → โหลด iframe ใหม่ (ซ่อนใต้แผ่นคลุม) เพื่อกระตุ้นให้
+        // gateway ลองต่อกล้องซ้ำ จะได้ตรวจเจอทันทีเมื่อต้นทางกลับมา
+        reloadStream(cam.src);
+      }
+    })
+  );
+}
+
 /* ================= Boot ================= */
 function renderAll() {
   renderFilters();
@@ -376,6 +494,8 @@ function renderAll() {
   renderMarkers();
 }
 renderAll();
+pollHealth();                              // ตรวจครั้งแรกทันที
+setInterval(pollHealth, HEALTH_INTERVAL);  // แล้วตรวจซ้ำเรื่อยๆ
 </script>
 </body>
 </html>
