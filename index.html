@@ -262,17 +262,30 @@
       border-right: none; border-bottom: 1px solid var(--line);
     }
     .filters { flex-wrap: nowrap; overflow-x: auto; border-bottom: none; width: 100%; padding: 8px 10px; }
-    .chip { flex-shrink: 0; padding: 7px 13px; }   /* กดง่ายขึ้น + ไม่ย่อ */
+    .chip { flex-shrink: 0; padding: 7px 13px; }
     .cam-list { display: none; }                    /* ซ่อนลิสต์กล้องยาวๆ บนมือถือ */
-    /* หัวเว็บ + แถบเครื่องมือ: ให้ตัดบรรทัดได้ ไม่ล้นจอ */
-    header { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; }
+
+    /* หัวเว็บแบบกะทัดรัด สมดุลในแถวเดียว */
+    header { gap: 10px; padding: 9px 12px; }
     header .spacer { display: none; }
-    .brand h1 { font-size: 15px; }
-    .clock { margin-left: auto; }
-    .clock .time { font-size: 17px; }
-    .toolbar { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+    .brand-badge { width: 34px; height: 34px; font-size: 18px; }
+    .brand { flex: 1; min-width: 0; }
+    .brand h1 { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .brand p { display: none; }                     /* ซ่อนคำบรรยายยาว */
+    .status-pill { padding: 6px 10px; font-size: 11.5px; flex-shrink: 0; }
+    .clock { flex-shrink: 0; }
+    .clock .time { font-size: 16px; }
+    .clock .date { display: none; }                 /* ซ่อนวันที่ */
+
+    /* แถบเครื่องมือ: จัดกึ่งกลาง ตัดบรรทัดได้ กดง่าย */
+    .toolbar { flex-wrap: wrap; justify-content: center; gap: 8px; padding: 8px 10px; }
     .tb-spacer { display: none; }
-    .toolbar .label { display: none; }              /* ประหยัดที่ */
+    .toolbar .label { display: none; }
+    .seg { flex-shrink: 0; }
+    .seg button { padding: 9px 13px; font-size: 13px; }
+    .toolbtn { padding: 9px 13px; }
+    .pager button { width: 34px; height: 34px; }
+
     #gridView { padding: 8px; }
     #gridView.cols-2, #gridView.cols-3, #gridView.cols-4 { grid-template-columns: 1fr; }
     #gridView.cols-1 .tile { max-width: none; }
@@ -364,6 +377,20 @@ const playerUrl = (cam) =>
 // รันบนเครื่องตัวเอง (localhost/ไฟล์) → เปิดปุ่มแก้หมุด | ขึ้น GitHub → ซ่อน
 const IS_LOCAL = ["localhost", "127.0.0.1", ""].includes(location.hostname);
 
+// iOS/Safari เล่น HLS (รวม H.265/hvc1) แบบ native ด้วย hardware decoder → ลื่น ไม่ภาพเขียว
+const SUPPORTS_NATIVE_HLS = !!document.createElement("video").canPlayType("application/vnd.apple.mpegurl");
+
+/* เลือกวิธีแสดงกล้องแต่ละตัว:
+ *   - กล้องทางหลวง (มี cam.hls) → HLS เสมอ
+ *   - กล้องเทศบาล → HLS ผ่าน gateway บนอุปกรณ์ที่เล่น HLS native ได้ (iOS/มือถือ) / iframe บนคอม */
+function mediaFor(cam) {
+  if (cam.hls) return { kind: "hls", url: cam.hls };
+  if (SUPPORTS_NATIVE_HLS) {
+    return { kind: "hls", url: `${CONFIG.gatewayUrl.replace(/\/$/, "")}/api/stream.m3u8?src=${encodeURIComponent(cam.src)}` };
+  }
+  return { kind: "iframe", url: playerUrl(cam) };
+}
+
 /* ================= Header / นาฬิกา ================= */
 $("#orgName").textContent = CONFIG.orgName;
 $("#orgSub").textContent = CONFIG.orgSub;
@@ -436,10 +463,11 @@ function renderGrid() {
     const t = CAMERA_TYPES[cam.type];
     const tile = document.createElement("div");
     tile.className = "tile";
-    // กล้อง HLS ใช้ <video>, กล้อง gateway ใช้ <iframe>
-    const media = cam.hls
+    // เลือก <video> (HLS) หรือ <iframe> (gateway MSE) ตามอุปกรณ์
+    const m = mediaFor(cam);
+    const media = m.kind === "hls"
       ? `<video data-cam="${cam.src}" muted autoplay playsinline></video>`
-      : `<iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen" loading="lazy"></iframe>`;
+      : `<iframe src="${m.url}" allow="autoplay; fullscreen" loading="lazy"></iframe>`;
     tile.innerHTML = `
       <div class="head">
         <i class="ti ${t.icon}" style="color:${t.color}"></i>
@@ -507,7 +535,8 @@ function playHls(videoEl, url) {
 function attachAllHls() {
   const gridActive = $("#gridView").style.display !== "none";
   for (const cam of CAMERAS) {
-    if (!cam.hls) continue;
+    const m = mediaFor(cam);
+    if (m.kind !== "hls") continue;                 // iframe ไม่ต้อง attach
     const box = document.querySelector(`.video[data-cam="${cam.src}"]`);
     if (!box) continue;
     const v = box.querySelector("video");
@@ -515,7 +544,7 @@ function attachAllHls() {
     const tile = box.closest(".tile");
     const visible = gridActive && !(tile && tile.classList.contains("paged-hidden"));
     if (visible && !hlsAttached[cam.src]) {
-      hlsPool[cam.src] = playHls(v, cam.hls);
+      hlsPool[cam.src] = playHls(v, m.url);
       hlsAttached[cam.src] = true;
     } else if (!visible && hlsAttached[cam.src]) {
       if (hlsPool[cam.src]) { try { hlsPool[cam.src].destroy(); } catch {} hlsPool[cam.src] = null; }
@@ -563,9 +592,11 @@ function initMap() {
     const v = e.popup.getElement()?.querySelector("video[data-cam]");
     if (!v) return;
     const cam = CAMERAS.find((c) => c.src === v.dataset.cam);
-    if (cam && cam.hls) {
+    if (!cam) return;
+    const m = mediaFor(cam);
+    if (m.kind === "hls") {
       if (popupHls) { try { popupHls.destroy(); } catch {} }
-      popupHls = playHls(v, cam.hls);
+      popupHls = playHls(v, m.url);
     }
   });
   map.on("popupclose", () => {
@@ -616,11 +647,12 @@ function renderMarkers() {
              </div>`,
       iconSize: [40, 40], iconAnchor: [20, 20], popupAnchor: [0, -20],
     });
+    const pm = mediaFor(cam);
     const preview = isOffline
       ? `<div class="pv" style="display:grid;place-items:center;background:#0d1420;color:#8ea3bf;font-family:'Chakra Petch'">OFFLINE</div>`
-      : cam.hls
+      : pm.kind === "hls"
       ? `<div class="pv"><video data-cam="${cam.src}" muted autoplay playsinline></video></div>`
-      : `<div class="pv"><iframe src="${playerUrl(cam)}" allow="autoplay; fullscreen"></iframe></div>`;
+      : `<div class="pv"><iframe src="${pm.url}" allow="autoplay; fullscreen"></iframe></div>`;
     const marker = L.marker([cam.lat, cam.lng], { icon, draggable: editMode })
       .bindPopup(
         `<div class="popup-player">
@@ -838,7 +870,8 @@ function applyAllStatus() {
 /* โหลดสตรีมใหม่ (ตอนกล้องกลับมาออนไลน์ หรือกระตุ้นให้ลองต่อซ้ำ) */
 function reloadStream(src) {
   const cam = CAMERAS.find((c) => c.src === src);
-  if (cam && cam.hls) {
+  const m = cam ? mediaFor(cam) : null;
+  if (m && m.kind === "hls") {
     const box = document.querySelector(`.video[data-cam="${src}"]`);
     const v = box && box.querySelector("video");
     const tile = box && box.closest(".tile");
@@ -846,13 +879,13 @@ function reloadStream(src) {
     const visible = gridActive && !(tile && tile.classList.contains("paged-hidden"));
     if (v && visible) {   // โหลดใหม่เฉพาะกล้องที่เห็นอยู่
       if (hlsPool[src]) { try { hlsPool[src].destroy(); } catch {} }
-      hlsPool[src] = playHls(v, cam.hls);
+      hlsPool[src] = playHls(v, m.url);
       hlsAttached[src] = true;
     }
     return;
   }
-  const box = document.querySelector(`.video[data-cam="${src}"] iframe`);
-  if (box) box.src = box.src;
+  const ifr = document.querySelector(`.video[data-cam="${src}"] iframe`);
+  if (ifr) ifr.src = ifr.src;
 }
 
 async function pollHealth() {
