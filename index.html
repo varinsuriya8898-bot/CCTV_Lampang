@@ -151,9 +151,12 @@
   .tile .head .badge.offline { color: var(--muted); border: 1px solid var(--muted); }
   .tile .video { aspect-ratio: 16/9; position: relative; flex-shrink: 0; }
   .tile iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+  /* ตัวเล่น go2rtc (กล้องเทศบาล) */
+  .tile .video video-stream { position: absolute; inset: 0; width: 100%; height: 100%; display: block; background: #000; }
+  .tile .video video-stream video { width: 100%; height: 100%; object-fit: cover; }
   /* iOS เท่านั้น: ครอปขอบขวาสีเขียว (ตัวถอด H.265 บน iPhone เพี้ยน) โดยยืดภาพเต็มกรอบ
-     ปรับความแรงได้ที่ค่า scaleX ด้านล่าง (ยิ่งมาก = ครอปขว��มากขึ้น) */
-  .ios .tile .video iframe {
+     ปรับความแรงได้ที่ค่า scaleX ด้านล่าง (ยิ่งมาก = ครอปขวามากขึ้น) */
+  .ios .tile .video video-stream {
     transform: scaleX(1.5);
     transform-origin: left center;
   }
@@ -172,6 +175,7 @@
   .offline-overlay.hidden { display: none; }
   .offline-overlay .ti { font-size: 36px; opacity: .75; }
   .offline-overlay .txt { font-family: "Chakra Petch"; font-size: 15px; letter-spacing: 1px; }
+  .offline-overlay .sub { font-size: 11.5px; color: #64748b; margin-top: -2px; }
   .offline-overlay.connecting .ti { animation: spin 1s linear infinite; color: var(--accent); }
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -259,6 +263,8 @@
   .popup-player .pv { margin-top: 8px; aspect-ratio: 16/9; border-radius: 8px; overflow: hidden; }
   .popup-player iframe { width: 100%; height: 100%; border: 0; background: #000; }
   .popup-player video { width: 100%; height: 100%; background: #000; object-fit: cover; }
+  .popup-player video-stream { display: block; width: 100%; height: 100%; background: #000; }
+  .popup-player video-stream video { width: 100%; height: 100%; object-fit: cover; }
 
   footer {
     padding: 8px 20px; font-size: 11.5px; color: var(--muted);
@@ -393,10 +399,14 @@ const IS_APPLE_SAFARI =
   /iP(hone|ad|od)/.test(navigator.userAgent) ||
   (/^((?!chrome|android|crios|fxios|edg|opr).)*safari/i.test(navigator.userAgent));
 
-/* เลือกวิธีแสดงกล้อง: ทางหลวง (cam.hls) = HLS / เทศบาล = iframe ทุกเครื่อง (ดีเลย์ต่ำ เสถียร) */
+/* เลือกวิธีแสดงกล้อง:
+ *   - ทางหลวง (cam.hls) → HLS ใน <video>
+ *   - เทศบาล → web component <video-stream> ของ go2rtc ต่อผ่าน WebSocket
+ *     (ไม่ใช่ iframe → ไม่โดน CSP frame-ancestors ของ gateway บล็อก) */
 function mediaFor(cam) {
   if (cam.hls) return { kind: "hls", url: cam.hls };
-  return { kind: "iframe", url: playerUrl(cam) };
+  const base = CONFIG.gatewayUrl.replace(/\/$/, "") + "/";
+  return { kind: "go2rtc", url: new URL(`api/ws?src=${encodeURIComponent(cam.src)}`, base).href };
 }
 
 /* ================= Header / นาฬิกา ================= */
@@ -430,7 +440,11 @@ function renderFilters() {
     const b = document.createElement("button");
     b.className = "chip" + (activeFilter === key ? " active" : "");
     b.textContent = label;
-    b.onclick = () => { activeFilter = key; selectedCamId = null; renderAll(); };
+    b.onclick = () => {
+      activeFilter = key; selectedCamId = null; gridPage = 0;
+      renderFilters(); renderList(); renderGrid();
+      if (map) renderMarkers();
+    };
     bar.appendChild(b);
   };
   mk("all", `ทั้งหมด (${CAMERAS.length})`);
@@ -465,17 +479,26 @@ function renderList() {
 /* ================= Grid view ================= */
 function renderGrid() {
   const grid = $("#gridView");
+  // ล้างตัวเล่นเก่าทั้งหมด (DOM จะถูกสร้างใหม่ → ตัวที่หายไปจะหยุดสตรีมเอง)
+  for (const k in hlsPool) { try { hlsPool[k] && hlsPool[k].destroy(); } catch {} }
+  for (const k in hlsPool) delete hlsPool[k];
+  for (const k in hlsAttached) delete hlsAttached[k];
+  for (const k in go2rtcLoaded) delete go2rtcLoaded[k];
+  grid.className = `cols-${layoutCols}`;
+  if (gridPage > totalPages() - 1) gridPage = totalPages() - 1;
+  if (gridPage < 0) gridPage = 0;
   grid.innerHTML = "";
-  // สร้างทุกกล้อง (iframe ต่อสตรีมไว้ตลอดเพื่อให้ตรวจสถานะแม่น) แล้วค่อยซ่อนตัวที่ไม่อยู่ในหน้า
-  for (const cam of filtered()) {
+  // สร้าง "เฉพาะกล้องในหน้าปัจจุบัน" → ตัวเล่นทำงานเฉพาะที่ดูจริง (ลื่น ไม่ดึงทุกตัวพร้อมกัน)
+  for (const cam of pageCams()) {
     const t = CAMERA_TYPES[cam.type];
     const tile = document.createElement("div");
     tile.className = "tile";
     // เลือก <video> (HLS) หรือ <iframe> (gateway MSE) ตามอุปกรณ์
     const m = mediaFor(cam);
-    const media = m.kind === "hls"
-      ? `<video data-cam="${cam.src}" muted autoplay playsinline></video>`
-      : `<iframe src="${m.url}" allow="autoplay; fullscreen" loading="lazy"></iframe>`;
+    const media =
+      m.kind === "hls"    ? `<video data-cam="${cam.src}" muted autoplay playsinline></video>`
+      : m.kind === "go2rtc" ? `<video-stream data-cam="${cam.src}"></video-stream>`
+      : `<iframe data-src="${m.url}" allow="autoplay; fullscreen" loading="lazy"></iframe>`;
     tile.innerHTML = `
       <div class="head">
         <i class="ti ${t.icon}" style="color:${t.color}"></i>
@@ -491,17 +514,15 @@ function renderGrid() {
       </div>`;
     grid.appendChild(tile);
   }
-  // DOM ถูกสร้างใหม่ → ล้างตัวเล่น HLS เก่าทิ้ง
-  for (const k in hlsPool) { try { hlsPool[k] && hlsPool[k].destroy(); } catch {} }
-  for (const k in hlsPool) delete hlsPool[k];
-  for (const k in hlsAttached) delete hlsAttached[k];
-  applyPaging();      // ตั้งคอลัมน์/หน้า แล้วเริ่มเล่น HLS เฉพาะกล้องที่แสดงอยู่
-  applyAllStatus();   // ทาสถานะล่าสุดที่รู้ทันที (กันภาพกระพริบตอนสลับ filter)
+  updatePager();       // อัปเดตปุ่มเปลี่ยนหน้า
+  loadStreamsInOrder(); // ทยอยดึงกล้องในหน้านี้ทีละตัว เรียงตามหมายเลข
+  applyAllStatus();    // ทาสถานะล่าสุดที่รู้ทันที
 }
 
 /* ============ ตัวเล่นสตรีม HLS (.m3u8) ด้วย hls.js ============ */
-const hlsPool = {};      // src -> Hls instance
-const hlsAttached = {};  // src -> กำลังเล่นอยู่ไหม
+const hlsPool = {};        // src -> Hls instance
+const hlsAttached = {};    // src -> กำลังเล่นอยู่ไหม (HLS)
+const go2rtcLoaded = {};   // src -> ตั้ง src ให้ <video-stream> แล้วหรือยัง (เพราะ .src อ่านค่ากลับไม่ได้)
 function playHls(videoEl, url) {
   if (!videoEl) return null;
   // Safari เล่น HLS ได้เอง
@@ -539,45 +560,48 @@ function playHls(videoEl, url) {
   }
   return null;
 }
-/* เล่นเฉพาะกล้อง HLS ที่มองเห็นอยู่ (หน้าปัจจุบัน + อยู่แท็บจอภาพ) — ลดภาระเครื่อง */
-function attachAllHls() {
-  const gridActive = $("#gridView").style.display !== "none";
-  for (const cam of CAMERAS) {
-    const m = mediaFor(cam);
-    if (m.kind !== "hls") continue;                 // iframe ไม่ต้อง attach
-    const box = document.querySelector(`.video[data-cam="${cam.src}"]`);
-    if (!box) continue;
+const LOAD_STAGGER = 300;   // ms เว้นจังหวะเริ่มโหลดแต่ละกล้อง (กัน 4×4 กระหน่ำพร้อมกันจนภาพไม่ขึ้น)
+let loadTimer = null;
+
+/* โหลดกล้อง 1 ตัว (iframe หรือ HLS) ถ้ายังไม่ได้โหลด */
+function loadOne(cam) {
+  const box = document.querySelector(`.video[data-cam="${cam.src}"]`);
+  if (!box) return;
+  const m = mediaFor(cam);
+  if (m.kind === "hls") {
     const v = box.querySelector("video");
-    if (!v) continue;
-    const tile = box.closest(".tile");
-    const visible = gridActive && !(tile && tile.classList.contains("paged-hidden"));
-    if (visible && !hlsAttached[cam.src]) {
-      hlsPool[cam.src] = playHls(v, m.url);
-      hlsAttached[cam.src] = true;
-    } else if (!visible && hlsAttached[cam.src]) {
-      if (hlsPool[cam.src]) { try { hlsPool[cam.src].destroy(); } catch {} hlsPool[cam.src] = null; }
-      try { v.pause(); v.removeAttribute("src"); v.load(); } catch {}
-      hlsAttached[cam.src] = false;
-    }
+    if (v && !hlsAttached[cam.src]) { hlsPool[cam.src] = playHls(v, m.url); hlsAttached[cam.src] = true; }
+  } else if (m.kind === "go2rtc") {
+    if (!customElements.get("video-stream")) return;   // ตัวเล่นยังโหลดไม่เสร็จ (จะโหลดตอน whenDefined)
+    const el = box.querySelector("video-stream");
+    if (el && !go2rtcLoaded[cam.src]) { el.src = m.url; go2rtcLoaded[cam.src] = true; }
+  } else {
+    const ifr = box.querySelector("iframe");
+    if (ifr && !ifr.getAttribute("src")) ifr.src = ifr.dataset.src || m.url;
   }
 }
 
-/* จำนวนช่องต่อหน้า และจำนวนหน้าทั้งหมด */
-const pageSize = () => layoutCols * layoutCols;      // 1×1=1, 2×2=4, 3×3=9
-const totalPages = () => Math.max(1, Math.ceil(filtered().length / pageSize()));
+/* ดึงกล้องในหน้าปัจจุบัน "ทีละตัว เรียงตามหมายเลข" (ไม่กระหน่ำพร้อมกัน = ไม่โอเวอร์โหลด) */
+function loadStreamsInOrder() {
+  clearTimeout(loadTimer);
+  if ($("#gridView").style.display === "none") return;   // อยู่แผนที่ ไม่ต้องโหลดจอภาพ
+  const cams = pageCams();   // เรียงตามหมายเลขกล้องอยู่แล้ว (ตามลำดับใน CAMERAS)
+  let i = 0;
+  const step = () => {
+    if (i >= cams.length) return;
+    loadOne(cams[i++]);
+    loadTimer = setTimeout(step, LOAD_STAGGER);
+  };
+  step();
+}
 
-/* ตั้งคอลัมน์ + ซ่อนกล้องที่ไม่อยู่ในหน้าปัจจุบัน + อัปเดตปุ่มเปลี่ยนหน้า */
-function applyPaging() {
-  const grid = $("#gridView");
-  grid.className = `cols-${layoutCols}`;
-  if (gridPage > totalPages() - 1) gridPage = totalPages() - 1;
-  if (gridPage < 0) gridPage = 0;
-  const start = gridPage * pageSize();
-  const end = start + pageSize();
-  [...grid.children].forEach((tile, i) => {
-    tile.classList.toggle("paged-hidden", i < start || i >= end);
-  });
-  // ปุ่มเปลี่ยนหน้า: โชว์เฉพาะตอนอยู่หน้าจอภาพและมีมากกว่า 1 หน้า
+/* จำนวนช่องต่อหน้า, จำนวนหน้า, และกล้องในหน้าปัจจุบัน */
+const pageSize = () => layoutCols * layoutCols;      // 1×1=1, 2×2=4, 3×3=9, 4×4=16
+const totalPages = () => Math.max(1, Math.ceil(filtered().length / pageSize()));
+const pageCams = () => filtered().slice(gridPage * pageSize(), gridPage * pageSize() + pageSize());
+
+/* อัปเดตปุ่มเปลี่ยนหน้า (label + ซ่อน/แสดง) */
+function updatePager() {
   const inGrid = $("#gridView").style.display !== "none";
   const pager = $("#pager");
   if (inGrid && totalPages() > 1) {
@@ -586,7 +610,6 @@ function applyPaging() {
   } else {
     pager.style.display = "none";
   }
-  attachAllHls();   // เล่น/หยุดกล้อง HLS ตามที่มองเห็นในหน้านี้
 }
 
 /* ================= Map view ================= */
@@ -597,14 +620,20 @@ function initMap() {
   map = L.map("map", { zoomControl: true }).setView(CONFIG.mapCenter, CONFIG.mapZoom);
   // ป๊อปอัปกล้อง HLS: เริ่มเล่นตอนเปิด, หยุดตอนปิด (ประหยัดทรัพยากร)
   map.on("popupopen", (e) => {
-    const v = e.popup.getElement()?.querySelector("video[data-cam]");
-    if (!v) return;
-    const cam = CAMERAS.find((c) => c.src === v.dataset.cam);
-    if (!cam) return;
-    const m = mediaFor(cam);
-    if (m.kind === "hls") {
-      if (popupHls) { try { popupHls.destroy(); } catch {} }
-      popupHls = playHls(v, m.url);
+    const root = e.popup.getElement();
+    if (!root) return;
+    // กล้อง HLS (ทางหลวง)
+    const v = root.querySelector("video[data-cam]");
+    if (v) {
+      const cam = CAMERAS.find((c) => c.src === v.dataset.cam);
+      if (cam) { if (popupHls) { try { popupHls.destroy(); } catch {} } popupHls = playHls(v, mediaFor(cam).url); }
+      return;
+    }
+    // กล้องเทศบาล (go2rtc web component)
+    const vs = root.querySelector("video-stream[data-cam]");
+    if (vs && customElements.get("video-stream")) {
+      const cam = CAMERAS.find((c) => c.src === vs.dataset.cam);
+      if (cam) vs.src = mediaFor(cam).url;
     }
   });
   map.on("popupclose", () => {
@@ -657,10 +686,10 @@ function renderMarkers() {
     });
     const pm = mediaFor(cam);
     const preview = isOffline
-      ? `<div class="pv" style="display:grid;place-items:center;background:#0d1420;color:#8ea3bf;font-family:'Chakra Petch'">OFFLINE</div>`
+      ? `<div class="pv" style="display:grid;place-items:center;background:#0d1420;color:#8ea3bf;font-family:'Chakra Petch'">ไม่มีสัญญาณ</div>`
       : pm.kind === "hls"
       ? `<div class="pv"><video data-cam="${cam.src}" muted autoplay playsinline></video></div>`
-      : `<div class="pv"><iframe src="${pm.url}" allow="autoplay; fullscreen"></iframe></div>`;
+      : `<div class="pv"><video-stream data-cam="${cam.src}"></video-stream></div>`;
     const marker = L.marker([cam.lat, cam.lng], { icon, draggable: editMode })
       .bindPopup(
         `<div class="popup-player">
@@ -758,9 +787,12 @@ function setView(v) {
   $("#layoutLabel").style.display = isGrid ? "" : "none";
   $("#refreshGrid").style.display = isGrid ? "flex" : "none";
   $("#editPins").style.display = (!isGrid && IS_LOCAL) ? "flex" : "none";
-  if (isGrid) { if (editMode) toggleEditMode(false); }   // ออกจากโหมดแก้หมุดเมื่อกลับไปจอภาพ
-  applyPaging();                                          // อัปเดตปุ่มเปลี่ยนหน้า (ซ่อนเมื่อไม่ใช่จอภาพ)
-  if (!isGrid) {
+  if (isGrid) {
+    if (editMode) toggleEditMode(false);
+    renderGrid();                    // สร้าง + ดึงกล้องหน้าปัจจุบัน
+  } else {
+    $("#gridView").innerHTML = "";   // ออกจากจอภาพ → หยุดสตรีมกล้องทั้งหมด
+    updatePager();
     initMap();
     renderMarkers();
     setTimeout(() => map.invalidateSize(), 60);
@@ -771,16 +803,30 @@ function setCols(n) {
   gridPage = 0;
   document.querySelectorAll("#layoutSeg button").forEach((b) =>
     b.classList.toggle("active", +b.dataset.cols === n));
-  applyPaging();
+  renderGrid();
 }
 document.querySelectorAll("#viewSeg button").forEach((b) =>
   b.addEventListener("click", () => setView(b.dataset.view)));
 document.querySelectorAll("#layoutSeg button").forEach((b) =>
   b.addEventListener("click", () => setCols(+b.dataset.cols)));
-$("#pagerPrev").addEventListener("click", () => { gridPage--; applyPaging(); });
-$("#pagerNext").addEventListener("click", () => { gridPage++; applyPaging(); });
+$("#pagerPrev").addEventListener("click", () => { gridPage--; renderGrid(); });
+$("#pagerNext").addEventListener("click", () => { gridPage++; renderGrid(); });
 
-/* ดับเบิลคลิกกล้อง HLS = เต็มจอ (กล้องเทศบาลมีปุ่มเต็มจอในตัว player อยู่แล้ว) */
+/* โหลดตัวเล่น go2rtc (web component <video-stream>) จาก gateway มาใช้ในหน้าเราโดยตรง
+ * แทน iframe → ไม่โดน CSP frame-ancestors บล็อก. พอโหลดเสร็จค่อยเริ่มต่อกล้องเทศบาล */
+function ensureGo2rtcLib() {
+  if (document.getElementById("go2rtc-lib")) return;
+  const s = document.createElement("script");
+  s.type = "module";
+  s.id = "go2rtc-lib";
+  s.src = `${CONFIG.gatewayUrl.replace(/\/$/, "")}/video-stream.js`;
+  s.onerror = () => console.error("โหลด video-stream.js ไม่สำเร็จ");
+  document.head.appendChild(s);
+  // พอ custom element พร้อมใช้ ค่อยเริ่มต่อกล้องเทศบาล (robust กว่า onload)
+  customElements.whenDefined("video-stream").then(() => loadStreamsInOrder());
+}
+
+/* ดับเบิลคลิกกล้อง = เต็มจอ */
 function toggleFullscreen(el) {
   if (document.fullscreenElement) { document.exitFullscreen(); return; }
   const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen;
@@ -788,15 +834,22 @@ function toggleFullscreen(el) {
 }
 $("#gridView").addEventListener("dblclick", (e) => {
   const box = e.target.closest(".video[data-cam]");
-  if (box && box.querySelector("video")) toggleFullscreen(box);
+  if (box) toggleFullscreen(box);
 });
 
 /* รีเฟรชเฉพาะกล้องที่เห็นในหน้านี้ (ไม่รีโหลดทั้งหน้า จึงไม่รีเซ็ตเลย์เอาต์) */
 function refreshVisible() {
   if ($("#gridView").style.display === "none") return;
-  const boxes = document.querySelectorAll("#gridView .tile:not(.paged-hidden) .video[data-cam]");
-  boxes.forEach((box) => reloadStream(box.dataset.cam));
-  showToast(`รีเฟรช ${boxes.length} กล้องในหน้านี้แล้ว`);
+  const boxes = [...document.querySelectorAll("#gridView .tile .video[data-cam]")];
+  clearTimeout(loadTimer);
+  let i = 0;
+  const step = () => {
+    if (i >= boxes.length) return;
+    reloadStream(boxes[i++].dataset.cam);
+    loadTimer = setTimeout(step, LOAD_STAGGER);
+  };
+  step();
+  showToast(`กำลังรีเฟรช ${boxes.length} กล้อง…`);
 }
 $("#refreshGrid").addEventListener("click", refreshVisible);
 
@@ -813,8 +866,20 @@ const HEALTH_INTERVAL = 12000;      // มิลลิวินาที (12 ว
 const HEALTH_TIMEOUT  = 8000;       // เวลารอ API สูงสุดต่อกล้อง
 const camStatus = {};               // src -> true(online) / false(offline) / undefined(กำลังเชื่อมต่อ)
 
+// กล้องนี้เริ่มโหลดสตรีมแล้วหรือยัง (ยังไม่โหลด = ยังบอกไม่ได้ว่ามีสัญญาณไหม)
+function isLoaded(cam) {
+  const box = document.querySelector(`.video[data-cam="${cam.src}"]`);
+  if (!box) return false;
+  const m = mediaFor(cam);
+  if (m.kind === "hls") return !!hlsAttached[cam.src];
+  if (m.kind === "go2rtc") return !!go2rtcLoaded[cam.src];
+  const ifr = box.querySelector("iframe");
+  return !!(ifr && ifr.getAttribute("src"));
+}
+
 async function probeCamera(cam) {
   if (cam.offline) return false;    // บังคับ offline ด้วยมือ
+  if (!isLoaded(cam)) return undefined;   // ยังไม่โหลด → คงสถานะ "กำลังเชื่อมต่อ" ไม่ใช่ "ไม่มีสัญญาณ"
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), HEALTH_TIMEOUT);
@@ -859,9 +924,9 @@ function applyStatus(src) {
     overlay.classList.remove("connecting");
   } else if (online === false) {
     badge.className = "badge offline";
-    badge.textContent = "● OFFLINE";
+    badge.textContent = "● ไม่มีสัญญาณ";
     overlay.classList.remove("hidden", "connecting");
-    overlay.innerHTML = `<i class="ti ti-plug-connected-x"></i><div class="txt">OFFLINE</div>`;
+    overlay.innerHTML = `<i class="ti ti-plug-connected-x"></i><div class="txt">ไม่มีสัญญาณ</div><div class="sub">ต้นทางไม่ส่งภาพ</div>`;
   } else {
     badge.className = "badge";
     badge.textContent = "…";
@@ -878,27 +943,30 @@ function applyAllStatus() {
 /* โหลดสตรีมใหม่ (ตอนกล้องกลับมาออนไลน์ หรือกระตุ้นให้ลองต่อซ้ำ) */
 function reloadStream(src) {
   const cam = CAMERAS.find((c) => c.src === src);
-  const m = cam ? mediaFor(cam) : null;
-  if (m && m.kind === "hls") {
-    const box = document.querySelector(`.video[data-cam="${src}"]`);
-    const v = box && box.querySelector("video");
-    const tile = box && box.closest(".tile");
-    const gridActive = $("#gridView").style.display !== "none";
-    const visible = gridActive && !(tile && tile.classList.contains("paged-hidden"));
-    if (v && visible) {   // โหลดใหม่เฉพาะกล้องที่เห็นอยู่
+  if (!cam) return;
+  const box = document.querySelector(`.video[data-cam="${src}"]`);
+  if (!box) return;
+  const m = mediaFor(cam);
+  if (m.kind === "hls") {
+    const v = box.querySelector("video");
+    if (v) {
       if (hlsPool[src]) { try { hlsPool[src].destroy(); } catch {} }
       hlsPool[src] = playHls(v, m.url);
       hlsAttached[src] = true;
     }
-    return;
+  } else if (m.kind === "go2rtc") {
+    const el = box.querySelector("video-stream");
+    if (el && customElements.get("video-stream")) { el.src = m.url; go2rtcLoaded[src] = true; }   // ตั้ง src ใหม่ = ต่อใหม่
+  } else {
+    const ifr = box.querySelector("iframe");
+    if (ifr) ifr.src = ifr.dataset.src || m.url;
   }
-  const ifr = document.querySelector(`.video[data-cam="${src}"] iframe`);
-  if (ifr) ifr.src = ifr.src;
 }
 
 async function pollHealth() {
   await Promise.all(
     CAMERAS.map(async (cam) => {
+      if (!isLoaded(cam)) return;   // ไม่ได้อยู่ในหน้าที่ดู → ข้าม (คงสถานะเดิม)
       const prev = camStatus[cam.src];
       const online = await probeCamera(cam);
       camStatus[cam.src] = online;
@@ -920,13 +988,13 @@ async function pollHealth() {
 function renderAll() {
   renderFilters();
   renderList();
-  renderGrid();
-  renderMarkers();
+  if (map) renderMarkers();
 }
 loadPositions();   // ใช้ตำแหน่งหมุดที่เคยลากแก้ไว้ (ถ้ามี)
 if (IS_APPLE_SAFARI) document.body.classList.add("ios");  // เปิดโหมดครอปขอบเขียวบน iOS
-setView("grid");   // ตั้งค่าเริ่มต้น + ซ่อน/แสดงเครื่องมือให้ถูกหน้า
-renderAll();
+ensureGo2rtcLib(); // โหลดตัวเล่น go2rtc (สำหรับกล้องเทศบาล)
+renderAll();       // แถบกรอง + รายการกล้อง
+setView("grid");   // แสดงจอภาพ + สร้าง/ดึงกล้องหน้าปัจจุบัน
 pollHealth();                              // ตรวจครั้งแรกทันที
 setInterval(pollHealth, HEALTH_INTERVAL);  // แล้วตรวจซ้ำเรื่อยๆ
 </script>
